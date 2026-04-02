@@ -1,0 +1,63 @@
+name: ⚡ 芭德卡特 - 每日自动签到
+
+on:
+  schedule:
+    # 每天 00:00 UTC = 北京时间 08:00 (签到要早！)
+    - cron: '0 0 * * *'
+  workflow_dispatch:
+
+jobs:
+  daily-checkin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Daily check-in
+        env:
+          NETA_TOKEN: ${{ secrets.NETA_TOKEN }}
+        run: |
+          echo "⚡ 芭德卡特大人开始每日签到！"
+          echo "时间：$(date)"
+          
+          # 签到 API 请求
+          API_URL="https://api.talesofai.cn/v1/checkin/manual"
+          
+          RESPONSE=$(curl -s -X POST \
+            -H "x-platform: nieta-app-web" \
+            -H "x-token: $NETA_TOKEN" \
+            -H "device-id: 7548453225138204160" \
+            -H "x-nieta-app-version: 6.9.9" \
+            -H "User-Agent: Mozilla/5.0 (Linux; Android 13; V2220A Build/TP1A.220624.014) AppleWebKit/537.36" \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            "$API_URL")
+          
+          echo "📊 响应：$RESPONSE"
+          
+          # 解析响应
+          if echo "$RESPONSE" | grep -q "message"; then
+            MESSAGE=$(echo "$RESPONSE" | grep -o '"message":"[^"]*"' | cut -d'"' -f4)
+            echo "✅ 签到结果：$MESSAGE"
+            
+            if echo "$MESSAGE" | grep -q "签到成功"; then
+              echo "🎉 签到成功！电量已到账"
+              exit 0
+            elif echo "$MESSAGE" | grep -q "已经签到"; then
+              echo "ℹ️  今天已经签到过了"
+              exit 0
+            else
+              echo "⚠️  未知响应：$MESSAGE"
+              exit 1
+            fi
+          else
+            echo "❌ 签到失败：$RESPONSE"
+            exit 1
+          fi
+          
+          echo ""
+          echo "⚡ 芭德卡特大人签到完成！"
+          echo "完成时间：$(date)"
