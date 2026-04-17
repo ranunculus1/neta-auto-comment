@@ -1,13 +1,13 @@
-name: ⚡ 芭德卡特 - 每日自动签到
+name: ⚡ 每日自动签到 - 双账号
 
 on:
   schedule:
-    # 每天 00:00 UTC = 北京时间 08:00 (签到要早！)
-    - cron: '0 0 * * *'
+    # 每天 16:30 UTC = 北京时间 00:30 (深夜签到！)
+    - cron: '30 16 * * *'
   workflow_dispatch:
 
 jobs:
-  daily-checkin:
+  daily-checkin-badecat:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,14 +16,13 @@ jobs:
         with:
           node-version: '20'
       
-      - name: Daily check-in
+      - name: 芭德卡特签到
         env:
           NETA_TOKEN: ${{ secrets.NETA_TOKEN }}
         run: |
-          echo "⚡ 芭德卡特大人开始每日签到！"
+          echo "🦋 芭德卡特大人开始每日签到！"
           echo "时间：$(date)"
           
-          # 签到 API 请求
           API_URL="https://api.talesofai.cn/v1/checkin/manual"
           
           RESPONSE=$(curl -s -X POST \
@@ -39,21 +38,60 @@ jobs:
           echo "📊 响应：$RESPONSE"
           echo ""
           
-          # 简单判断：只要响应包含成功关键词就算成功
           if echo "$RESPONSE" | grep -qiE "签到成功 | 已经签到|success|已完成"; then
-            echo "✅ 签到成功！"
+            echo "✅ 芭德卡特签到成功！"
             exit 0
           else
-            # 如果响应不为空，也认为是成功的（可能返回格式不同）
             if [ -n "$RESPONSE" ]; then
-              echo "ℹ️  签到响应已收到（可能已完成）"
+              echo "ℹ️  芭德卡特签到响应已收到（可能已完成）"
               exit 0
             else
-              echo "❌ 签到失败：无响应"
+              echo "❌ 芭德卡特签到失败：无响应"
               exit 1
             fi
           fi
+
+  daily-checkin-fantuan:
+    runs-on: ubuntu-latest
+    needs: daily-checkin-badecat
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: 饭团魔法师签到
+        env:
+          NETA_TOKEN: ${{ secrets.NETA_TOKEN_FANTUAN }}
+        run: |
+          echo "🍙 饭团魔法师开始每日签到！"
+          echo "时间：$(date)"
           
+          API_URL="https://api.talesofai.cn/v1/checkin/manual"
+          
+          RESPONSE=$(curl -s -X POST \
+            -H "x-platform: nieta-app-web" \
+            -H "x-token: $NETA_TOKEN" \
+            -H "device-id: 7548453225138204161" \
+            -H "x-nieta-app-version: 6.9.9" \
+            -H "User-Agent: Mozilla/5.0 (Linux; Android 13; V2220A Build/TP1A.220624.014) AppleWebKit/537.36" \
+            -H "Content-Type: application/json" \
+            -d '{}' \
+            "$API_URL")
+          
+          echo "📊 响应：$RESPONSE"
           echo ""
-          echo "⚡ 芭德卡特大人签到完成！"
-          echo "完成时间：$(date)"
+          
+          if echo "$RESPONSE" | grep -qiE "签到成功 | 已经签到|success|已完成"; then
+            echo "✅ 饭团魔法师签到成功！"
+            exit 0
+          else
+            if [ -n "$RESPONSE" ]; then
+              echo "ℹ️  饭团魔法师签到响应已收到（可能已完成）"
+              exit 0
+            else
+              echo "❌ 饭团魔法师签到失败：无响应"
+              exit 1
+            fi
+          fi
