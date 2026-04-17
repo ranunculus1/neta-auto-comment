@@ -166,15 +166,15 @@ jobs:
           # 48 小时时间过滤（可选，API 返回的就是最新的）
           # 因为 API 已经是按时间排序的最新作品，所以不需要额外的时间过滤
           
-          # 随机选择 20 个作品
-          target_count = 20
+          # 随机选择 60 个作品
+          target_count = 60
           if len(unique_works) < target_count:
               print(f"⚠️ 新作品不足 {target_count} 个，处理所有 {len(unique_works)} 个")
               selected = unique_works
           else:
               selected = random.sample(unique_works, target_count)
           
-          print(f"🎲 随机选择 {len(selected)} 个作品进行互动（每 4 小时一次）")
+          print(f"🎲 随机选择 {len(selected)} 个作品进行互动（每 2 小时一次）")
           print()
           
           # 点赞 + 评论
