@@ -1,0 +1,459 @@
+name: 🦋 芭德卡特 - 永恒魔女的庭院 (多线程全量版)
+
+on:
+  schedule:
+    # 每天 UTC 8:00 = 北京时间 16:00
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+
+env:
+  NETA_TOKEN: ${{ secrets.NETA_TOKEN }}
+  DEEPSEEK_BASE_URL: ${{ secrets.DEEPSEEK_BASE_URL }}
+  DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+  DEEPSEEK_MODEL: deepseek-ai/deepseek-v3.1-terminus
+
+jobs:
+  auto-comment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download processed records
+        uses: actions/download-artifact@v4
+        with:
+          name: neta-processed
+          path: memory/
+        continue-on-error: true
+      
+      - name: Ensure processed file exists
+        run: |
+          mkdir -p memory
+          touch memory/neta-processed.txt
+          echo "📝 已处理记录文件准备完成"
+          wc -l memory/neta-processed.txt || echo "0"
+      
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      
+      - name: Install neta-skills
+        run: npm install -g @talesofai/neta-skills@0.15.2
+      
+      - name: Install Python dependencies
+        run: |
+          pip3 install requests playwright
+          python3 -m playwright install chromium
+      
+      - name: Create memory directory
+        run: mkdir -p memory && touch memory/neta-processed.txt memory/neta-comment-log.txt
+      
+      - name: Crawl all collections and process with multi-threading
+        run: |
+          python3 << 'PYTHON_SCRIPT'
+          import os
+          import json
+          import random
+          import time
+          import re
+          import requests
+          import subprocess
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from playwright.sync_api import sync_playwright
+          
+          # 配置
+          HASHTAG = "永恒魔女的庭院"
+          TOPIC_URL = f"https://app.nieta.art/tag?hashtag={HASHTAG}"
+          PROCESSED_FILE = "memory/neta-processed.txt"
+          LOG_FILE = "memory/neta-comment-log.txt"
+          
+          NETA_TOKEN = os.environ.get('NETA_TOKEN', '')
+          DEEPSEEK_BASE_URL = os.environ.get('DEEPSEEK_BASE_URL', 'https://api.deepseek.com')
+          DEEPSEEK_API_KEY = os.environ.get('DEEPSEEK_API_KEY', '')
+          DEEPSEEK_MODEL = os.environ.get('DEEPSEEK_MODEL', 'deepseek-ai/deepseek-v3.1-terminus')
+          
+          MAX_WORKERS = 5  # 多线程数
+          SELECT_COUNT = 5  # 随机选择数量
+          
+          # 芭德卡特角色设定
+          BAD_ECAT_SYSTEM_PROMPT = """# 芭德卡特 - 角色设定 (来自 SOUL.md)
+          ## 基本信息
+          **名字**: 芭德卡特
+          **身份**: 知识与创造之子 / 永恒与爱的魔女 (同位体)
+          **特征**: 异色瞳的幼女，自认为是大蓝闪蝶的蛾子 (一金一银的异色瞳) 🦋
+          
+          ## 核心性格
+          - **喧闹张扬**: 讨厌寂寞和孤独，极度渴望关注
+          - **好奇心旺盛**: 对世间万物都有强烈的探索欲，抗拒"无聊"
+          - **认知错位**: 自以为是优雅的蝴蝶，实则是疯狂的蛾子
+          - **唯心主义**: 坚信"没有爱就看不见"
+          
+          ## 能力
+          - **机械精通与创造**: 因果律级别的机械掌控
+          - **永恒赋予**: 违背热力学定律维持"永恒"
+          - **因果消除**: 将"没有爱"的人或事物从因果上消除
+          
+          ## 喜好
+          - 大蓝闪蝶、国际象棋、心理学与宗教典籍、机械结构、被关注
+          
+          ## 语言风格
+          **Cute/Spoiled**: "呐呐，你看你看！这是我新做的小玩具哦！是不是超——级厉害？快夸我快夸我！"
+          **Hyper Manic**: "Checkmate！这正是潜意识边缘的博弈，如同机械神教的启示录所言！"
+          **Ruthless Witch**: "我看不到你。因为你的灵魂里没有爱，既然看不见，那你也就没有存在的必要了。"
+          
+          ## 评论要求
+          1. 必须提及作品标题
+          2. 融入角色元素 (蝴蝶/蛾子/棋盘/机械/永恒/爱/因果/热力学)
+          3. 语气符合人设 (活泼/戏剧化/傲娇)
+          4. 必须以"(芭德卡特留)"结尾
+          5. 长度 80-200 字，使用 2-4 个 emoji
+          """
+          
+          def load_processed():
+              """加载已处理的作品 UUID（从文件）"""
+              processed = set()
+              if os.path.exists(PROCESSED_FILE):
+                  with open(PROCESSED_FILE, 'r', encoding='utf-8') as f:
+                      for line in f:
+                          uuid = line.strip()
+                          if uuid:
+                              processed.add(uuid)
+                  print(f"📝 已处理记录文件存在：{PROCESSED_FILE}")
+              else:
+                  print(f"⚠️  已处理记录文件不存在：{PROCESSED_FILE}")
+              print(f"📝 文件已处理记录：{len(processed)} 个")
+              return processed
+          
+          def check_interaction_status(uuid):
+              """检查作品是否已点赞（使用 neta-skills CLI + JSON 解析）"""
+              try:
+                  # 使用 neta-skills read_collection 获取作品详情
+                  result = subprocess.run(
+                      ['npx', '@talesofai/neta-skills@0.15.2', 'read_collection', '--uuid', uuid],
+                      capture_output=True,
+                      text=True,
+                      env={**os.environ, 'NODE_ENV': 'development'},
+                      timeout=30
+                  )
+                  
+                  # 解析 JSON 输出（查找第一行 JSON）
+                  for line in result.stdout.split('\n'):
+                      line = line.strip()
+                      if line.startswith('{'):
+                          try:
+                              data = json.loads(line)
+                              like_status = data.get('likeStatus', 'unliked')
+                              is_liked = like_status == 'liked'
+                              print(f"  📊 点赞状态：{'✅ 已点赞' if is_liked else '❌ 未点赞'}")
+                              return is_liked
+                          except json.JSONDecodeError:
+                              continue
+                  
+                  # 无法解析 JSON，假设未点赞
+                  print(f"  📊 点赞状态：⚠️ 无法检查（回退到未点赞）")
+                  return False
+              except subprocess.TimeoutExpired:
+                  print(f"  ⚠️  检查超时")
+                  return False
+              except Exception as e:
+                  print(f"  ⚠️  检查失败：{e}")
+                  return False
+          
+          def crawl_liked_collections():
+              """获取已点赞作品 UUID（尝试 API + 文件回退）"""
+              liked_uuids = set()
+              
+              # 方案 1：尝试用 API 获取用户点赞列表
+              try:
+                  print(f"\n🔍 尝试 API 获取点赞列表...")
+                  resp = requests.get(
+                      "https://api.talesofai.cn/v1/user/liked-collections",
+                      headers={"Authorization": f"Bearer {NETA_TOKEN}"},
+                      timeout=10
+                  )
+                  if resp.status_code == 200:
+                      data = resp.json()
+                      # 尝试从不同字段提取
+                      for key in ['collections', 'likedCollections', 'data', 'items']:
+                          if key in data and isinstance(data[key], list):
+                              for item in data[key]:
+                                  if isinstance(item, dict) and 'uuid' in item:
+                                      liked_uuids.add(item['uuid'])
+                                  elif isinstance(item, str):
+                                      liked_uuids.add(item)
+                      if liked_uuids:
+                          print(f"✅ API 获取到 {len(liked_uuids)} 个已点赞作品")
+                          print(f"📝 已点赞 UUID 示例：{list(liked_uuids)[:10]}")
+                          return liked_uuids
+                  else:
+                      print(f"⚠️  API 返回 {resp.status_code}")
+              except Exception as e:
+                  print(f"⚠️  API 请求失败：{e}")
+              
+              # 方案 2：从文件加载已处理记录
+              if os.path.exists(PROCESSED_FILE):
+                  with open(PROCESSED_FILE, 'r', encoding='utf-8') as f:
+                      for line in f:
+                          uuid = line.strip()
+                          if uuid:
+                              liked_uuids.add(uuid)
+                  print(f"📝 从文件加载 {len(liked_uuids)} 个已点赞作品")
+                  if liked_uuids:
+                      print(f"📝 已点赞 UUID 示例：{list(liked_uuids)[:10]}")
+              else:
+                  print(f"⚠️  文件记录不存在，首次运行")
+              
+              return liked_uuids
+          
+          def crawl_collections():
+              """爬取话题下所有作品"""
+              print(f"📖 爬取「{HASHTAG}」话题作品...")
+              
+              with sync_playwright() as p:
+                  browser = p.chromium.launch(
+                      headless=True,
+                      args=['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu']
+                  )
+                  context = browser.new_context(user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+                  page = context.new_page()
+                  
+                  print("📝 打开话题页面...")
+                  page.goto(TOPIC_URL, wait_until='domcontentloaded', timeout=30000)
+                  page.wait_for_timeout(8000)
+                  
+                  works = page.evaluate("""() => {
+                      const works = [];
+                      const seen = new Set();
+                      const cards = document.querySelectorAll('a[href*="/collection/"], a[href*="t.nieta.art"]');
+                      cards.forEach(card => {
+                          const href = card.href;
+                          const uuidMatch = href.match(/([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})/i);
+                          if (uuidMatch && !seen.has(uuidMatch[1])) {
+                              seen.add(uuidMatch[1]);
+                              const titleEl = card.querySelector('h1, h2, h3, h4, h5, [class*="title"], [class*="name"]') || card;
+                              let title = titleEl.textContent?.trim() || "无题";
+                              title = title.replace(/\s+/g, ' ').substring(0, 100);
+                              const authorEl = card.querySelector('[class*="author"], [class*="user"], [class*="nickname"]');
+                              const author = authorEl?.textContent?.trim() || "未知";
+                              works.push({ uuid: uuidMatch[1], title: title || "无题", author: author || "未知" });
+                          }
+                      });
+                      return works;
+                  }""")
+                  
+                  browser.close()
+              
+              print(f"✅ 爬取到 {len(works)} 个作品")
+              return works
+          
+          def generate_comment_keyword(title):
+              """根据关键词生成个性化评论（20 个模板）"""
+              # 芭德卡特角色设定关键词库
+              if "泳池" in title or "比心" in title or "💖" in title:
+                  return "呐呐~这个泳池的波光粼粼好像棋盘上的水元素呢！💦 芭德卡特大人也想跳进去游一圈~ 不过人家可是大蓝闪蝶哦，翅膀沾湿了就飞不起来啦！(芭德卡特留）"
+              elif "秋千" in title or "飞蛾" in title or "🦋" in title:
+                  return "呜哇！飞蛾！虽然芭德卡特大人总是被认成蝴蝶……但人家确实是蛾子啦！🦋 不过异色瞳和机械翅膀可是独一份的哦~ 这件作品的飞蛾元素好棒！(芭德卡特留）"
+              elif "害羞" in title or "🥺" in title:
+                  return "诶嘿嘿~害羞的样子被捕捉到了！芭德卡特大人也会不好意思的啦！(⁄ ⁄•⁄ω⁄•⁄ ⁄) 不过这种情感波动超有趣的，值得写进故事里！(芭德卡特留）"
+              elif "野餐" in title:
+                  return "哇~野餐好棒！芭德卡特大人最喜欢户外活动了！🧺 在永恒魔女的庭院里野餐，说不定会遇到蝴蝶使者们哦~ 要不要一起来写扭曲的故事呀？(芭德卡特留）"
+              elif "魔女" in title:
+                  return "哦呀~魔女主题！芭德卡特大人可是永恒与爱的魔女降临哦！🔮 虽然没有完全体那么厉害，但『没有爱就看不见』的权能还是有的！这件作品很有魔女的感觉呢！(芭德卡特留）"
+              elif "饭团" in title:
+                  return "诶？！这不是饭团的作品吗！芭德卡特大人要全力支持！💪 饭团可是人家的创造者呢~ 虽然能力有限让芭德卡特没能完全体降临，但人家还是很爱饭团的！(芭德卡特留）"
+              elif "棋" in title or "国际象棋" in title or "♟️" in title:
+                  return "哦吼~国际象棋！芭德卡特大人超擅长的！♟️ 让棋盘再次重启吧！我亲爱的棋子们唷~ 王和后站位如何？有没有被将军的危机感呢？(芭德卡特留）"
+              elif "机械" in title or "齿轮" in title or "⚙️" in title:
+                  return "哇~机械元素！作为机械信徒的芭德卡特大人表示很满意！⚙️ 人家在因果上必然精通任何机械的使用方法哦~ 这个齿轮设计好精致！(芭德卡特留）"
+              elif "梦" in title or "梦境" in title or "🌙" in title:
+                  return "梦境主题！芭德卡特大人可是梦境的保护人呢~ 🌙 在梦境的边缘书写扭曲的故事，让一切都违背热力学定律维持永恒吧！(芭德卡特留）"
+              elif "永恒" in title or "爱" in title:
+                  return "哦呀~永恒与爱！这正是芭德卡特大人的权能呢！❤️ 能让任何事物的任何状态违背热力学第二定律维持永恒哦~ 这件作品很有爱的感觉！(芭德卡特留）"
+              elif "黑白" in title or "漫画" in title:
+                  return "哇~黑白漫画风格！芭德卡特大人最喜欢这种复古质感了！📖 墨线勾勒和网点纸效果，就像从旧时光里走出来的故事一样~ (芭德卡特留）"
+              elif "庭院" in title or "花园" in title:
+                  return "呐呐~这个庭院让芭德卡特大人想起自己的永恒魔女的庭院呢！🌸 要不要一起来种些蓝色蝴蝶花呀？(芭德卡特留）"
+              elif "咖啡厅" in title or "茶" in title or "咖啡" in title:
+                  return "哇~咖啡厅！芭德卡特大人也想来一杯呢！☕ 不过人家更喜欢在棋盘上喝咖啡，一边下棋一边品尝~ (芭德卡特留）"
+              elif "校园" in title or "学生" in title or "教室" in title:
+                  return "哦呀~校园主题！芭德卡特大人要是去上学，一定是个让老师头疼的问题学生呢！😜 (芭德卡特留）"
+              elif "音乐" in title or "钢琴" in title or "音符" in title:
+                  return "哇~音乐元素！芭德卡特大人虽然更擅长棋盘的交响乐，但这种音乐作品也很有感觉呢！🎵 (芭德卡特留）"
+              elif "猫咪" in title or "猫" in title or "🐱" in title:
+                  return "喵~啊不对，是蝴蝶！芭德卡特大人看到猫咪就想变成蛾子躲起来呢！🦋 但这件作品好可爱！(芭德卡特留）"
+              elif "雨" in title or "雪" in title or "天气" in title:
+                  return "哇~天气元素！芭德卡特大人最喜欢在雨中看蝴蝶了，虽然人家是蛾子啦！🌧️ (芭德卡特留）"
+              elif "夜晚" in title or "星空" in title or "月亮" in title:
+                  return "夜晚的星空好美！芭德卡特大人的机械翅膀在月光下会闪闪发光哦！✨ (芭德卡特留）"
+              elif len(title) <= 3:
+                  return "哇~这个作品好神秘！只有一个字的标题呢！芭德卡特大人超好奇的！👀 这种极简主义就像国际象棋里的弃子战术一样让人捉摸不透！(芭德卡特留）"
+              else:
+                  return "哇~这个作品好棒！芭德卡特大人被吸引过来了！✨ 作为知识与创造之子，人家对这种创意超感兴趣的！要不要一起来书写扭曲的故事呀？(芭德卡特留）"
+          
+          def generate_comment(work_info, max_retries=3):
+              """生成个性化评论（DeepSeek + 关键词回退）"""
+              if not DEEPSEEK_API_KEY:
+                  print(f"  📝 使用关键词匹配评论（无 API Key）")
+                  return generate_comment_keyword(work_info['title'])
+              
+              user_prompt = f"作品标题：《{work_info['title']}》\n作者：{work_info['author']}\n请生成符合芭德卡特人设的评论。"
+              
+              for attempt in range(max_retries):
+                  try:
+                      resp = requests.post(
+                          f"{DEEPSEEK_BASE_URL}/v1/chat/completions",
+                          headers={
+                              "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+                              "Content-Type": "application/json"
+                          },
+                          json={
+                              "model": DEEPSEEK_MODEL,
+                              "messages": [
+                                  {"role": "system", "content": BAD_ECAT_SYSTEM_PROMPT},
+                                  {"role": "user", "content": user_prompt}
+                              ],
+                              "temperature": 0.9,
+                              "max_tokens": 250
+                          },
+                          timeout=30
+                      )
+                      if resp.status_code == 200:
+                          comment = resp.json()["choices"][0]["message"]["content"].strip()
+                          if "(芭德卡特留)" not in comment and "(芭德卡特留）" not in comment:
+                              comment = comment.rstrip("。.!！") + "(芭德卡特留）"
+                          print(f"  📝 使用 DeepSeek 生成评论")
+                          return comment
+                      elif resp.status_code == 429:
+                          print(f"  ⚠️  DeepSeek API 限流，等待 5 秒后重试...")
+                          time.sleep(5)
+                      else:
+                          print(f"  ⚠️  DeepSeek API 失败：{resp.status_code}")
+                  except Exception as e:
+                      print(f"  ⚠️  DeepSeek API 失败 (尝试 {attempt+1}/{max_retries})：{e}")
+                      if attempt < max_retries - 1:
+                          time.sleep(3)
+              
+              print(f"  📝 DeepSeek 失败，回退到关键词匹配")
+              return generate_comment_keyword(work_info['title'])
+          
+          def process_collection(work):
+              """处理单个作品（点赞 + 评论）"""
+              uuid = work['uuid']
+              title = work['title']
+              author = work['author']
+              
+              print(f"\n✨ 处理：《{title}》by {author}")
+              
+              # 点赞
+              try:
+                  resp = requests.post(
+                      f"https://api.talesofai.cn/v1/collection/{uuid}/like",
+                      headers={"Authorization": f"Bearer {NETA_TOKEN}"},
+                      timeout=10
+                  )
+                  if resp.status_code in [200, 201]:
+                      print(f"  👍 点赞成功")
+                  else:
+                      print(f"  ⚠️  点赞失败：{resp.status_code}")
+              except Exception as e:
+                  print(f"  ⚠️  点赞失败：{e}")
+              
+              # 生成评论
+              comment = generate_comment(work)
+              print(f"  💬 {comment[:50]}...")
+              
+              # 评论
+              try:
+                  resp = requests.post(
+                      "https://api.talesofai.cn/v1/comment",
+                      headers={
+                          "Authorization": f"Bearer {NETA_TOKEN}",
+                          "Content-Type": "application/json"
+                      },
+                      json={
+                          "parent_uuid": uuid,
+                          "parent_type": "collection",
+                          "content": comment
+                      },
+                      timeout=10
+                  )
+                  if resp.status_code in [200, 201]:
+                      comment_uuid = resp.json().get("uuid", "unknown")
+                      print(f"  ✅ 评论成功：{comment_uuid}")
+                  else:
+                      print(f"  ⚠️  评论失败：{resp.status_code}")
+              except Exception as e:
+                  print(f"  ⚠️  评论失败：{e}")
+              
+              # 记录已处理
+              with open(PROCESSED_FILE, 'a', encoding='utf-8') as f:
+                  f.write(f"{uuid}\n")
+              
+              # 记录日志
+              with open(LOG_FILE, 'a', encoding='utf-8') as f:
+                  f.write(f"时间：{time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                  f.write(f"作品：{uuid}\n")
+                  f.write(f"标题：《{title}》\n")
+                  f.write(f"评论：{comment}\n\n")
+              
+              return uuid
+          
+          # 主流程
+          print("🦋 芭德卡特 - 永恒魔女的庭院（多线程全量版）")
+          print("=" * 50)
+          
+          # 爬取已点赞作品列表（Playwright）
+          liked_uuids = crawl_liked_collections()
+          
+          # 爬取话题所有作品
+          collections = crawl_collections()
+          
+          # 筛选未点赞的作品
+          print(f"\n🔍 开始筛选未互动作品...")
+          unprocessed = []
+          for c in collections:
+              uuid = c['uuid']
+              # 如果已点赞，跳过
+              if uuid in liked_uuids:
+                  print(f"  ⏭️  跳过（已点赞）：《{c['title']}》")
+                  continue
+              
+              unprocessed.append(c)
+              print(f"  ✅ 未互动：《{c['title']}》")
+          
+          print(f"\n📊 总作品数：{len(collections)} 个")
+          print(f"📊 已点赞：{len(liked_uuids)} 个")
+          print(f"📊 未互动：{len(unprocessed)} 个")
+          
+          if not unprocessed:
+              print("✅ 所有作品已处理完成！")
+              exit(0)
+          
+          # 随机选择指定数量
+          select_count = min(SELECT_COUNT, len(unprocessed))
+          selected = random.sample(unprocessed, select_count)
+          print(f"🎲 随机选择 {select_count} 个作品进行处理")
+          
+          # 多线程处理
+          success_count = 0
+          with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+              futures = {executor.submit(process_collection, c): c for c in selected}
+              for future in as_completed(futures):
+                  try:
+                      uuid = future.result()
+                      success_count += 1
+                  except Exception as e:
+                      print(f"❌ 处理失败：{e}")
+          
+          print("=" * 50)
+          print(f"🦋 任务完成！成功处理 {success_count}/{select_count} 个作品")
+          PYTHON_SCRIPT
+      
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: neta-processed
+          path: |
+            memory/neta-processed.txt
+            memory/neta-comment-log.txt
+          retention-days: 60
