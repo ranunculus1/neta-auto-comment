@@ -1,0 +1,255 @@
+name: 🦋 芭德卡特 - 随机点赞评论互动 (API 版)
+
+on:
+  schedule:
+    # 每 2 小时一次（北京时间 00:00/02:00/04:00/06:00/08:00/10:00/12:00/14:00/16:00/18:00/20:00/22:00）
+    # UTC 时间：16:00/18:00/20:00/22:00/00:00/02:00/04:00/06:00/08:00/10:00/12:00/14:00
+    - cron: '0 16,18,20,22,0,2,4,6,8,10,12,14 * * *'
+  workflow_dispatch:
+
+env:
+  NODE_ENV: development
+  NETA_TOKEN: ${{ secrets.NETA_TOKEN }}
+
+jobs:
+  random-interaction:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download processed records
+        uses: actions/download-artifact@v4
+        with:
+          name: neta-processed  # 与自动评论共用同一个文件
+          path: memory/
+        continue-on-error: true
+      
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      
+      - name: Install dependencies
+        run: |
+          mkdir -p memory
+          pip install requests
+      
+      - name: Fetch latest works with API and interact
+        run: |
+          python3 << 'PYTHON_EOF'
+          import os
+          import random
+          import json
+          import subprocess
+          import datetime
+          import requests
+          
+          NETA_TOKEN = os.environ.get('NETA_TOKEN', '')
+          PROCESSED_FILE = 'memory/neta-processed.txt'  # 与自动评论共用同一个文件
+          
+          # 50 条活人感评论模板
+          COMMENTS = [
+              "哇这个好喜欢！😍", "太棒了吧！", "好厉害啊～", "这个风格好赞✨",
+              "爱了爱了！", "好好看！", "太会画了吧！", "这个配色好绝！",
+              "好有感觉～", "太喜欢这个了！", "哇塞好强！", "这个细节好棒！",
+              "好有创意啊！", "太美了吧～", "这个构图好赞！", "好喜欢这个风格！",
+              "太厉害了！", "这个光影好绝！", "好有氛围感～", "太会了吧！",
+              "这个表情好生动！", "好喜欢！", "这个质感好棒！", "太赞了！",
+              "这个设计好巧！", "好有味道～", "这个动态好自然！", "太喜欢了！",
+              "这个色调好舒服！", "好强啊！", "这个好有感觉！", "太棒了吧～",
+              "这个好精致！", "好喜欢这个！", "这个好有创意！", "太会画了！",
+              "这个好有感觉～", "好棒啊！", "这个好喜欢！", "太绝了吧！",
+              "这个好有味道！", "好厉害！", "这个好赞！", "太喜欢这个风格了！",
+              "这个好美～", "好有感觉啊！", "这个好棒！", "太会了！",
+              "这个好有创意～", "好喜欢啊！",
+          ]
+          
+          # 已处理记录
+          processed = set()
+          try:
+              with open(PROCESSED_FILE, 'r') as f:
+                  processed = set(line.strip() for line in f if line.strip())
+          except FileNotFoundError:
+              pass
+          
+          print("🦋 芭德卡特大人开始随机互动！")
+          print(f"📝 已处理记录：{len(processed)} 个")
+          
+          # API 配置
+          API_URL = "https://api.talesofai.cn/v1/home/feed/mainlist"
+          API_PARAMS = {
+              "page_size": 20,
+              "page_index": 0,
+              "theme": "最新"
+          }
+          
+          # 请求头（从抓包获取）
+          HEADERS = {
+              "x-token": NETA_TOKEN,
+              "x-platform": "nieta-app/web",
+              "x-nieta-app-version": "6.9.10",
+              "device-id": "7548453225138204160",
+              "user-agent": "Mozilla/5.0 (Linux; Android 13; V2220A Build/TP1A.220624.014; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/146.0.7680.119 Mobile Safari/537.36",
+              "accept": "application/json, text/plain, */*",
+          }
+          
+          # 解析 Token 获取用户信息
+          import base64
+          try:
+              parts = NETA_TOKEN.split('.')
+              payload = json.loads(base64.urlsafe_b64decode(parts[1] + '=='))
+              user_uuid = payload.get('uuid', '')
+              user_id = payload.get('id', '')
+              print(f"🔑 Token 用户：{user_uuid} (ID: {user_id})")
+          except Exception as e:
+              print(f"⚠️ 解析 Token 失败：{e}")
+              user_uuid = ''
+          
+          print("📝 用 API 获取最新作品...")
+          works = []
+          seen_uuids = set()
+          
+          try:
+              # 获取 5 页（100 个作品）
+              for page in range(5):
+                  API_PARAMS['page_index'] = page
+                  resp = requests.get(API_URL, params=API_PARAMS, headers=HEADERS, timeout=10)
+                  
+                  if resp.status_code != 200:
+                      print(f"⚠️ 第{page+1}页请求失败：{resp.status_code}")
+                      continue
+                  
+                  data = resp.json()
+                  module_list = data.get('module_list', [])
+                  
+                  for module in module_list:
+                      json_data = module.get('json_data', {})
+                      if not json_data:
+                          continue
+                      
+                      uuid = json_data.get('storyId', json_data.get('uuid', ''))
+                      if not uuid or uuid in seen_uuids:
+                          continue
+                      
+                      seen_uuids.add(uuid)
+                      
+                      # 过滤标题开头和结尾的数字
+                      import re
+                      title = json_data.get('name', '无题')
+                      title = re.sub(r'^\d+\s*', '', title)
+                      title = re.sub(r'\s*\d+$', '', title)
+                      title = title.strip()
+                      
+                      user_id = json_data.get('user_id', '未知')
+                      
+                      works.append({
+                          'uuid': uuid,
+                          'title': title or '无题',
+                          'author': str(user_id)
+                      })
+                  
+                  print(f"📝 第{page+1}页：获取到 {len(seen_uuids)} 个作品")
+                  
+                  # 如果已经获取到足够的作品，提前退出
+                  if len(seen_uuids) >= 100:
+                      break
+              
+              print(f"✅ 总共获取到 {len(works)} 个作品")
+              
+          except Exception as e:
+              print(f"❌ API 请求失败：{e}")
+              works = []
+          
+          # 去重：跳过已处理的作品
+          unique_works = [w for w in works if w['uuid'] not in processed]
+          print(f"📝 去重后剩余 {len(unique_works)} 个新作品")
+          
+          # 48 小时时间过滤（可选，API 返回的就是最新的）
+          # 因为 API 已经是按时间排序的最新作品，所以不需要额外的时间过滤
+          
+          # 随机选择 60 个作品
+          target_count = 60
+          if len(unique_works) < target_count:
+              print(f"⚠️ 新作品不足 {target_count} 个，处理所有 {len(unique_works)} 个")
+              selected = unique_works
+          else:
+              selected = random.sample(unique_works, target_count)
+          
+          print(f"🎲 随机选择 {len(selected)} 个作品进行互动（每 2 小时一次）")
+          print()
+          
+          # 点赞 + 评论
+          like_count = 0
+          count = 0
+          successfully_processed = set()  # 只记录成功点赞评论的 UUID
+          
+          for work in selected:
+              uuid = work['uuid']
+              title = work['title']
+              author = work['author']
+              
+              print(f"✨ 处理：{title[:30]}... ({uuid})")
+              
+              # 点赞（直接用 API，使用 .cn 域名）
+              try:
+                  like_data = {"storyId": uuid, "is_cancel": False}
+                  like_resp = requests.put(
+                      "https://api.talesofai.cn/v1/story/story-like",
+                      headers=HEADERS,
+                      json=like_data,
+                      timeout=10
+                  )
+                  if like_resp.status_code in [200, 204]:
+                      print("  ✅ 点赞成功")
+                      like_count += 1
+                  elif like_resp.status_code == 400 and "已经点赞" in like_resp.text:
+                      print("  ⏭️ 已点过赞，跳过")
+                      like_count += 1  # 算作成功
+                  else:
+                      print(f"  ❌ 点赞失败：{like_resp.status_code} - {like_resp.text[:100]}")
+              except Exception as e:
+                  print(f"  ❌ 点赞异常：{e}")
+              
+              # 评论（直接用 API，使用 .cn 域名）
+              try:
+                  comment = random.choice(COMMENTS) + " (芭德卡特留)"
+                  comment_data = {
+                      "content": comment,
+                      "parent_uuid": uuid,
+                      "parent_type": "collection"
+                  }
+                  comment_resp = requests.post(
+                      "https://api.talesofai.cn/v1/comment/comment",
+                      headers=HEADERS,
+                      json=comment_data,
+                      timeout=10
+                  )
+                  if comment_resp.status_code in [200, 201]:
+                      print(f"  ✅ 评论成功：{comment[:50]}...")
+                      count += 1
+                      # 只有点赞和评论都成功才记录
+                      if like_resp.status_code in [200, 204] or (like_resp.status_code == 400 and "已经点赞" in like_resp.text):
+                          successfully_processed.add(uuid)
+                  else:
+                      print(f"  ❌ 评论失败：{comment_resp.status_code} - {comment_resp.text[:100]}")
+              except Exception as e:
+                  print(f"  ❌ 评论异常：{e}")
+              
+              print()
+          
+          # 只保存成功点赞评论的 UUID 到文件
+          # 使用 set 去重
+          all_uuids = list(processed | successfully_processed)
+          with open(PROCESSED_FILE, 'w') as f:
+              for uuid in all_uuids:
+                  f.write(f"{uuid}\n")
+          
+          print(f"🦋 完成！成功点赞 {like_count} 个，成功评论 {count} 个作品")
+          print(f"📝 累计已处理 {len(all_uuids)} 个作品（本次新增 {len(successfully_processed)} 个）")
+          
+          PYTHON_EOF
+      
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neta-processed  # 与自动评论共用同一个文件
+          path: memory/neta-processed.txt
+          retention-days: 60
