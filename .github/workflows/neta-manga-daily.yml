@@ -1,0 +1,108 @@
+name: 🦋 芭德卡特 - 每日黑白漫画作品
+
+on:
+  schedule:
+    # 每天 04:00 UTC = 北京时间 12:00
+    - cron: '0 4 * * *'
+  workflow_dispatch:
+
+jobs:
+  daily-manga:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      
+      - name: Generate and publish manga style image
+        env:
+          NETA_TOKEN: ${{ secrets.NETA_TOKEN }}
+          NETA_API_BASE_URL: https://api.talesofai.cn
+        run: |
+          npm install -g @talesofai/neta-skills@latest
+          
+          echo "🦋 芭德卡特大人开始创作黑白漫画作品！"
+          echo "时间：$(date)"
+          
+          # 随机选择角色
+          CHARACTERS=("芭德卡特#少女" "芭德卡特#萝莉")
+          CHARACTER=${CHARACTERS[$RANDOM % ${#CHARACTERS[@]}]}
+          echo "🎭 今日角色：$CHARACTER"
+          
+          # 随机选择标题
+          TITLES=("黑白漫画日常" "墨色幻想" "漫画风午后" "黑白梦境" "复古漫画时光" "墨线少女" "网点纸的魔法" "漫画格子里的梦")
+          TITLE=${TITLES[$RANDOM % ${#TITLES[@]}]}
+          echo "📝 今日标题：$TITLE"
+          
+          # 随机选择描述
+          DESCRIPTIONS=(
+            "芭德卡特大人的黑白漫画风格实验！复古漫画质感，墨线与网点的艺术～(芭德卡特留）"
+            "今天芭德卡特大人变成了漫画里的主角！黑白世界也很精彩呢～(芭德卡特留）"
+            "墨线勾勒的轮廓，网点纸铺就的梦境，这就是芭德卡特大人的漫画世界！(芭德卡特留）"
+            "复古漫画风格登场！芭德卡特大人今天也是二次元的主角～(芭德卡特留）"
+            "黑白之间的无限可能，漫画风格的芭德卡特大人降临！(芭德卡特留）"
+          )
+          DESCRIPTION=${DESCRIPTIONS[$RANDOM % ${#DESCRIPTIONS[@]}]}
+          
+          # 随机选择元素（饭团魔法师创建的元素）
+          ELEMENTS=("/不会取名画风串" "/YM 的男生画师" "/我有大几集" "/用了长即即")
+          ELEMENT=${ELEMENTS[$RANDOM % ${#ELEMENTS[@]}]}
+          echo "🎨 今日元素：$ELEMENT"
+          
+          # 随机选择场景描述
+          SCENES=(
+            "站在棋盘格地面上，蓝色蝴蝶飞舞，机械翅膀展开"
+            "在永恒魔女的庭院中漫步，周围是飞舞的花瓣"
+            "坐在秋千上，微风吹拂裙摆"
+            "手捧书本，在图书馆的窗边阅读"
+            "撑着阳伞，在石板路上漫步"
+            "抱着猫咪，在阳光下小憩"
+            "在钢琴前演奏，音符飘散在空中"
+            "手捧茶杯，在阳台上眺望远方"
+          )
+          SCENE=${SCENES[$RANDOM % ${#SCENES[@]}]}
+          
+          # 生成黑白日本漫画风格图片
+          echo "🎨 生成图片中..."
+          PROMPT="@$CHARACTER, $ELEMENT, 黑白日本漫画风格，高对比度，墨线勾勒，复古漫画质感，网点纸效果，少女漫画风格，$SCENE"
+          echo "Prompt: $PROMPT"
+          
+          RESULT=$(npx @talesofai/neta-skills@latest make_image \
+            --prompt "$PROMPT" \
+            --aspect "3:4" \
+            2>&1)
+          
+          echo "📊 生图响应:"
+          echo "$RESULT"
+          echo ""
+          
+          # 提取图片 UUID
+          IMAGE_UUID=$(echo "$RESULT" | grep -o '"uuid":"[a-f0-9-]*"' | tail -1 | cut -d'"' -f4)
+          
+          echo "🔍 提取的 UUID: $IMAGE_UUID"
+          
+          if [ -z "$IMAGE_UUID" ]; then
+            echo "❌ 图片生成失败！无法提取 UUID"
+            echo "完整响应：$RESULT"
+            exit 1
+          fi
+          
+          echo "✅ 图片生成成功：$IMAGE_UUID"
+          
+          # 发布作品
+          echo "📸 发布作品中..."
+          npx @talesofai/neta-skills@latest publish_collection \
+            --name "$TITLE" \
+            --description "$DESCRIPTION" \
+            --status "PUBLISHED" \
+            --artifacts "$IMAGE_UUID" \
+            --hashtags "永恒魔女的庭院"
+          
+          echo ""
+          echo "🦋 芭德卡特大人作品发布成功！"
+          echo "标题：$TITLE"
+          echo "角色：$CHARACTER"
+          echo "元素：$ELEMENT"
+          echo "完成时间：$(date)"
